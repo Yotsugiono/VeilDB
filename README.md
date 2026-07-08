@@ -157,6 +157,7 @@ web/
 ├── gateway/
 │   ├── main.py        # FastAPI 入口
 │   ├── config.py      # 环境变量和路径配置
+│   ├── audit.py       # 审计日志持久化与读取
 │   ├── bridge.py      # TCP 客户端
 │   ├── encdb_rpc.py   # 与 RPC.cpp 对齐的编解码
 │   ├── sql_builder.py # SQL 到 EncDB 请求的转换
@@ -215,6 +216,7 @@ http://127.0.0.1:8080/static/index.html
 | `HTTP_HOST` | `0.0.0.0` | 网关监听地址配置项 |
 | `HTTP_PORT` | `8080` | 网关监听端口配置项 |
 | `SESSION_CLIENT_ID_START` | `100` | 网关会话 client_id 起始值 |
+| `AUDIT_LOG_LIMIT` | `500` | 审计日志默认返回条数 |
 
 ## API 摘要
 
@@ -223,6 +225,7 @@ http://127.0.0.1:8080/static/index.html
 | `GET` | `/` | 服务信息，返回 UI 和 API docs 路径 |
 | `GET` | `/api/health` | 网关配置和目录健康信息 |
 | `GET` | `/api/databases` | 已持久化数据库列表 |
+| `DELETE` | `/api/databases/{edb_id}` | 管理者删除未连接的持久化数据库 |
 | `POST` | `/api/session/init` | 创建新会话；传入 `edb_id` 时连接已有数据库 |
 | `POST` | `/api/session/shutdown` | 保存并关闭当前会话 |
 | `GET` | `/api/session/{session_id}` | 查询会话信息 |
@@ -231,6 +234,7 @@ http://127.0.0.1:8080/static/index.html
 | `POST` | `/api/replace` | 替换已有文档 |
 | `POST` | `/api/delete` | 删除指定文档 |
 | `POST` | `/api/query` | 执行 `SELECT` 查询 |
+| `GET` | `/api/audit/logs` | 查询审计日志；支持 `edb_id` 和 `limit` 查询参数 |
 
 FastAPI 自动文档地址：
 
@@ -238,9 +242,36 @@ FastAPI 自动文档地址：
 http://127.0.0.1:8080/docs
 ```
 
+## 数据库删除
+
+管理者界面可以在“数据库连接”模块输入数据库编号，或在数据库状态列表中点击已有数据库后，点击“删除数据库”移除对应的持久化目录。后端会拒绝删除正在被当前 Web 会话使用的数据库；如需删除当前连接的数据库，请先点击“保存并断开”。
+
+删除操作会调用：
+
+```text
+DELETE /api/databases/{edb_id}
+```
+
+删除成功后，数据库列表和审计日志会自动刷新；删除记录写入全局审计日志。
+
+## 审计日志
+
+网关会在数据库操作入口写入服务器端审计日志，包括创建/连接数据库、保存断开、插入、上传、替换、删除和查询。日志按数据库持久化：
+
+```text
+EncDB/Databases/edb_<id>/audit.jsonl
+```
+
+每行是一条 JSON 记录，包含时间、数据库编号、会话、client_id、角色、操作类型、目标、状态、耗时和详情。管理者界面的“审计日志”面板通过以下接口读取：
+
+```text
+GET /api/audit/logs
+GET /api/audit/logs?edb_id=3
+GET /api/audit/logs?edb_id=3&limit=100
+```
+
 ## 开发注意事项
 
 - 运行数据库文件位于 `EncDB/Databases`，默认不建议提交。
 - 上传缓存位于 `web/gateway/uploads`，默认不建议提交。
-- Python 虚拟环境建议放在 `web/.venv` 或根目录 `.venv`，已被 `.gitignore` 忽略。
 - 修改前端静态文件后，如果浏览器仍加载旧脚本，可强刷新或更新 `index.html` 中资源版本查询串。

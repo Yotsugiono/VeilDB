@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 from typing import List, Optional, Set, TypedDict
 
@@ -15,7 +16,11 @@ class DatabaseStatus(TypedDict):
 
 
 def catalog_path(edb_id: int) -> Path:
-    return ENCDB_DATABASES_DIR / f"edb_{edb_id}" / "catalog.json"
+    return database_dir(edb_id) / "catalog.json"
+
+
+def database_dir(edb_id: int) -> Path:
+    return ENCDB_DATABASES_DIR / f"edb_{edb_id}"
 
 
 def save_catalog(edb_id: int, occupied: Set[int], revision: int = 0) -> None:
@@ -55,6 +60,16 @@ def list_persisted_edb_ids() -> List[int]:
     return sorted(ids)
 
 
+def delete_persisted_edb(edb_id: int) -> None:
+    root = ENCDB_DATABASES_DIR.resolve()
+    target = database_dir(edb_id).resolve()
+    if target == root or root not in target.parents:
+        raise ValueError(f"invalid database path: {target}")
+    if not target.is_dir():
+        raise FileNotFoundError(f"edb_id={edb_id} not found on disk")
+    shutil.rmtree(target)
+
+
 def get_database_statuses() -> List[DatabaseStatus]:
     statuses: List[DatabaseStatus] = []
     for edb_id in list_persisted_edb_ids():
@@ -65,7 +80,7 @@ def get_database_statuses() -> List[DatabaseStatus]:
             doc_count = len(occupied) if isinstance(occupied, list) else 0
             revision = int(catalog.get("revision", 0))
         else:
-            docs_dir = ENCDB_DATABASES_DIR / f"edb_{edb_id}" / "docs"
+            docs_dir = database_dir(edb_id) / "docs"
             doc_count = sum(1 for path in docs_dir.glob("*.bin")) if docs_dir.is_dir() else 0
             revision = 0
         statuses.append(

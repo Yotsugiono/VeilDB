@@ -11,9 +11,6 @@ let cachedDatabaseItems = [];
 let auditLogs = [];
 let auditDatabaseFilter = "all";
 
-const AUDIT_LOG_KEY = "encdb.audit.logs";
-const AUDIT_LOG_LIMIT = 500;
-
 const $ = (id) => document.getElementById(id);
 
 function setButtonBusy(button, busy, busyText) {
@@ -71,7 +68,11 @@ function parseBatchRange() {
 
 async function api(path, options = {}) {
   const res = await fetch(`${API_BASE}${path}`, {
-    headers: { "Content-Type": "application/json", ...options.headers },
+    headers: {
+      "Content-Type": "application/json",
+      "X-EncDB-Role": currentRole,
+      ...options.headers,
+    },
     ...options,
   });
   const data = await res.json().catch(() => ({}));
@@ -123,23 +124,6 @@ function setHealthStatus(ok, text) {
   $("health-text").textContent = text;
 }
 
-function loadAuditLogsFromStorage() {
-  try {
-    const stored = JSON.parse(localStorage.getItem(AUDIT_LOG_KEY) || "[]");
-    auditLogs = Array.isArray(stored) ? stored : [];
-  } catch {
-    auditLogs = [];
-  }
-}
-
-function saveAuditLogsToStorage() {
-  try {
-    localStorage.setItem(AUDIT_LOG_KEY, JSON.stringify(auditLogs.slice(0, AUDIT_LOG_LIMIT)));
-  } catch {
-    // 审计缓存不可写时仍允许主流程继续执行。
-  }
-}
-
 function formatAuditTime(value) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "-";
@@ -171,6 +155,30 @@ function renderAuditDatabaseFilter() {
     ...ids.map((id) => `<option value="${id}">数据库 #${id}</option>`),
   ].join("");
   select.value = auditDatabaseFilter;
+}
+
+async function loadAuditLogs() {
+  const list = $("audit-log-list");
+  const summary = $("audit-summary");
+  const query = auditDatabaseFilter === "all"
+    ? "?limit=500"
+    : `?edb_id=${encodeURIComponent(auditDatabaseFilter)}&limit=500`;
+
+  try {
+    const data = await api(`/api/audit/logs${query}`);
+    auditLogs = Array.isArray(data.logs) ? data.logs : [];
+    renderAuditDatabaseFilter();
+    renderAuditLogList();
+  } catch (error) {
+    auditLogs = [];
+    renderAuditDatabaseFilter();
+    if (summary) {
+      summary.textContent = "审计加载失败";
+    }
+    if (list) {
+      list.innerHTML = `<p class="database-empty">加载审计记录失败：${escapeHtml(error.message)}</p>`;
+    }
+  }
 }
 
 function renderAuditLogList() {
@@ -209,7 +217,7 @@ function renderAuditLogList() {
           </div>
           <div class="audit-log-meta">
             <span>${escapeHtml(dbText)}</span>
-            <span>${escapeHtml(entry.role === "admin" ? "管理者" : "使用者")}</span>
+            <span>${escapeHtml(entry.role === "admin" ? "管理者" : entry.role === "user" ? "使用者" : "未知角色")}</span>
             <span>${escapeHtml(formatAuditTime(entry.time))}</span>
           </div>
           ${entry.detail ? `<p class="audit-log-detail">${escapeHtml(entry.detail)}</p>` : ""}
@@ -217,24 +225,6 @@ function renderAuditLogList() {
       `;
     })
     .join("");
-}
-
-function recordAudit({ edb_id = edbId, action, target = "", status = "success", detail = "", latency_ms = null }) {
-  auditLogs.unshift({
-    id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
-    time: new Date().toISOString(),
-    edb_id: Number.isInteger(edb_id) ? edb_id : null,
-    role: currentRole,
-    action,
-    target,
-    status,
-    detail,
-    latency_ms,
-  });
-  auditLogs = auditLogs.slice(0, AUDIT_LOG_LIMIT);
-  saveAuditLogsToStorage();
-  renderAuditDatabaseFilter();
-  renderAuditLogList();
 }
 
 function updateAvailableDatabasesSummary(items = cachedDatabaseItems) {
@@ -263,8 +253,7 @@ function applyRole(role) {
 
   if (role === "admin") {
     loadDatabaseList(false);
-    renderAuditDatabaseFilter();
-    renderAuditLogList();
+    loadAuditLogs();
   } else {
     updateAvailableDatabasesSummary();
   }
@@ -458,8 +447,7 @@ async function loadDatabaseList(updateStatus = true) {
     cachedDatabaseItems = items;
     renderDatabaseList(items);
     updateAvailableDatabasesSummary(items);
-    renderAuditDatabaseFilter();
-    renderAuditLogList();
+    await loadAuditLogs();
     if (updateStatus) {
       setSessionMeta(
         items.length
@@ -480,7 +468,11 @@ async function loadDatabaseList(updateStatus = true) {
 
 async function postUploadForm(form, replace) {
   const path = replace ? "/api/replace" : "/api/upload";
-  const res = await fetch(`${API_BASE}${path}`, { method: "POST", body: form });
+  const res = await fetch(`${API_BASE}${path}`, {
+    method: "POST",
+    headers: { "X-EncDB-Role": currentRole },
+    body: form,
+  });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     const detail = data.detail || res.statusText;
@@ -493,6 +485,12 @@ async function insertEnronDoc(docId) {
   return api("/api/insert", {
     method: "POST",
     body: JSON.stringify({ session_id: sessionId, doc_id: String(docId) }),
+  });
+}
+
+async function deleteDatabaseById(targetEdbId) {
+  return api(`/api/databases/${encodeURIComponent(targetEdbId)}`, {
+    method: "DELETE",
   });
 }
 
@@ -519,21 +517,10 @@ $("btn-init").addEventListener("click", async () => {
       applyDocCatalog(data.doc_catalog);
     }
     setSessionUI(data);
-    recordAudit({
-      edb_id: data.edb_id,
-      action: "创建数据库",
-      target: `数据库 #${data.edb_id}`,
-      detail: `会话 ${data.session_id}`,
-    });
     await loadDatabaseList(false);
   } catch (error) {
-    recordAudit({
-      edb_id: null,
-      action: "创建数据库",
-      status: "error",
-      detail: error.message,
-    });
     setSessionMeta(`创建失败：${error.message}`);
+    await loadAuditLogs();
     $("btn-resume").disabled = false;
     initButton.disabled = false;
   } finally {
@@ -570,21 +557,10 @@ $("btn-resume").addEventListener("click", async () => {
       applyDocCatalog(data.doc_catalog);
     }
     setSessionUI(data);
-    recordAudit({
-      edb_id: data.edb_id,
-      action: "连接数据库",
-      target: `数据库 #${data.edb_id}`,
-      detail: `会话 ${data.session_id}`,
-    });
+    await loadAuditLogs();
   } catch (error) {
-    recordAudit({
-      edb_id: resumeId,
-      action: "连接数据库",
-      target: `数据库 #${resumeId}`,
-      status: "error",
-      detail: error.message,
-    });
     setSessionMeta(`连接失败：${error.message}`);
+    await loadAuditLogs();
     $("btn-init").disabled = false;
     resumeButton.disabled = false;
   } finally {
@@ -600,9 +576,66 @@ $("btn-refresh-databases").addEventListener("click", async () => {
   await loadDatabaseList();
 });
 
-$("audit-edb-filter").addEventListener("change", () => {
+$("btn-delete-database").addEventListener("click", async () => {
+  if (currentRole !== "admin") return;
+
+  const raw = $("resume-edb-id").value.trim();
+  if (!raw) {
+    setSessionMeta("请输入要删除的数据库编号。");
+    return;
+  }
+
+  const targetEdbId = Number.parseInt(raw, 10);
+  if (!Number.isInteger(targetEdbId) || targetEdbId <= 0) {
+    setSessionMeta("数据库编号无效。");
+    return;
+  }
+
+  if (edbId === targetEdbId) {
+    setSessionMeta(`数据库 #${targetEdbId} 正在当前会话中使用，请先保存并断开。`);
+    return;
+  }
+
+  if (!window.confirm(`确认永久删除数据库 #${targetEdbId} 吗？此操作会删除持久化文件。`)) {
+    return;
+  }
+
+  const deleteButton = $("btn-delete-database");
+  deleteButton.disabled = true;
+  setButtonBusy(deleteButton, true, "删除中");
+  setSessionMeta(`正在删除数据库 #${targetEdbId}...`);
+
+  try {
+    const data = await deleteDatabaseById(targetEdbId);
+    if (data.success) {
+      if ($("resume-edb-id").value.trim() === String(targetEdbId)) {
+        $("resume-edb-id").value = "";
+      }
+      if (String(auditDatabaseFilter) === String(targetEdbId)) {
+        auditDatabaseFilter = "all";
+      }
+      setSessionMeta(`数据库 #${targetEdbId} 已删除。`);
+      await loadDatabaseList(false);
+    } else {
+      setSessionMeta(data.message || `删除数据库 #${targetEdbId} 失败。`);
+      await loadAuditLogs();
+    }
+  } catch (error) {
+    setSessionMeta(`删除失败：${error.message}`);
+    await loadAuditLogs();
+  } finally {
+    setButtonBusy(deleteButton, false);
+    deleteButton.disabled = false;
+  }
+});
+
+$("audit-edb-filter").addEventListener("change", async () => {
   auditDatabaseFilter = $("audit-edb-filter").value;
-  renderAuditLogList();
+  await loadAuditLogs();
+});
+
+$("btn-refresh-audit").addEventListener("click", async () => {
+  await loadAuditLogs();
 });
 
 $("btn-shutdown").addEventListener("click", async () => {
@@ -623,38 +656,19 @@ $("btn-shutdown").addEventListener("click", async () => {
       body: JSON.stringify({ session_id: sessionId }),
     });
     if (data.success) {
-      recordAudit({
-        edb_id: data.edb_id,
-        action: "保存并断开",
-        target: `数据库 #${data.edb_id}`,
-        detail: "会话已关闭",
-        latency_ms: data.latency_ms,
-      });
       setSessionMeta(`数据库 #${data.edb_id} 已保存，耗时 ${data.latency_ms} ms。`);
       resetSessionUI();
       if (currentRole === "admin") {
         await loadDatabaseList(false);
       }
     } else {
-      recordAudit({
-        edb_id: closingEdbId,
-        action: "保存并断开",
-        target: `数据库 #${closingEdbId ?? "?"}`,
-        status: "error",
-        detail: data.message,
-      });
       setSessionMeta(`保存失败：${data.message}`);
+      await loadAuditLogs();
       shutdownButton.disabled = false;
     }
   } catch (error) {
-    recordAudit({
-      edb_id: closingEdbId,
-      action: "保存并断开",
-      target: `数据库 #${closingEdbId ?? "?"}`,
-      status: "error",
-      detail: error.message,
-    });
     setSessionMeta(`保存失败：${error.message}`);
+    await loadAuditLogs();
     shutdownButton.disabled = false;
   } finally {
     setButtonBusy(shutdownButton, false);
@@ -699,30 +713,15 @@ $("btn-insert-enron").addEventListener("click", async () => {
       markDocOccupied(data.doc_id);
       updateHeroSummary();
       setSessionMeta(formatSessionConnected({ edb_id: edbId, doc_catalog: { occupied: [...occupiedDocIds] } }));
-      recordAudit({
-        action: "插入 Enron 示例",
-        target: `文档 #${data.doc_id}`,
-        detail: "示例文档写入数据库",
-        latency_ms: data.latency_ms,
-      });
+      await loadAuditLogs();
       setDocStatus(`文档 #${data.doc_id} 插入成功，耗时 ${data.latency_ms} ms。`);
     } else {
-      recordAudit({
-        action: "插入 Enron 示例",
-        target: `文档 #${docId}`,
-        status: "error",
-        detail: data.message,
-      });
+      await loadAuditLogs();
       setDocStatus(data.message);
     }
   } catch (error) {
-    recordAudit({
-      action: "插入 Enron 示例",
-      target: `文档 #${docId}`,
-      status: "error",
-      detail: error.message,
-    });
     setDocStatus(`插入失败：${error.message}`);
+    await loadAuditLogs();
   } finally {
     setButtonBusy(insertButton, false);
     insertButton.disabled = false;
@@ -781,14 +780,7 @@ $("btn-batch-insert").addEventListener("click", async () => {
     }
 
     setSessionMeta(formatSessionConnected({ edb_id: edbId, doc_catalog: { occupied: [...occupiedDocIds] } }));
-    recordAudit({
-      action: "批量插入 Enron 示例",
-      target: `文档 #${range.start}-#${range.end}`,
-      status: failures.length ? "error" : "success",
-      detail: failures.length
-        ? `成功 ${successCount} 个，失败 ${failures.length} 个`
-        : `成功插入 ${successCount} 个示例`,
-    });
+    await loadAuditLogs();
     if (failures.length) {
       setDocStatus(`批量插入完成：成功 ${successCount} 个，失败 ${failures.length} 个。${failures.slice(0, 3).join("；")}`);
     } else {
@@ -831,30 +823,15 @@ async function uploadSelectedFile(file) {
       markDocOccupied(data.doc_id);
       updateHeroSummary();
       setSessionMeta(formatSessionConnected({ edb_id: edbId, doc_catalog: { occupied: [...occupiedDocIds] } }));
-      recordAudit({
-        action: data.replaced ? "替换文档" : "上传文档",
-        target: `文档 #${data.doc_id}`,
-        detail: file.name,
-        latency_ms: data.latency_ms,
-      });
+      await loadAuditLogs();
       setDocStatus(`文档 #${data.doc_id} 已${data.replaced ? "替换" : "上传"}，耗时 ${data.latency_ms} ms。`);
     } else {
-      recordAudit({
-        action: replace ? "替换文档" : "上传文档",
-        target: `文档 #${docId}`,
-        status: "error",
-        detail: data.message || file.name,
-      });
+      await loadAuditLogs();
       setDocStatus(data.message);
     }
   } catch (error) {
-    recordAudit({
-      action: replace ? "替换文档" : "上传文档",
-      target: `文档 #${docId}`,
-      status: "error",
-      detail: error.message,
-    });
     setDocStatus(`上传失败：${error.message}`);
+    await loadAuditLogs();
   } finally {
     setButtonBusy(insertButton, false);
     insertButton.disabled = false;
@@ -918,23 +895,11 @@ $("btn-query").addEventListener("click", async () => {
       method: "POST",
       body: JSON.stringify({ session_id: sessionId, sql }),
     });
-    recordAudit({
-      action: "执行查询",
-      target: sql.length > 80 ? `${sql.slice(0, 80)}...` : sql,
-      detail: data.result_mode === "aggregate"
-        ? `聚合结果，匹配 ${data.match_count ?? 0} 条`
-        : `返回 ${data.doc_count} 条结果`,
-      latency_ms: data.latency_ms,
-    });
+    await loadAuditLogs();
     renderResults(data);
   } catch (error) {
-    recordAudit({
-      action: "执行查询",
-      target: sql.length > 80 ? `${sql.slice(0, 80)}...` : sql,
-      status: "error",
-      detail: error.message,
-    });
     setQueryMeta(`查询失败：${error.message}`);
+    await loadAuditLogs();
     setQueryChips([
       { label: "状态", value: "失败" },
       { label: "错误", value: error.message, accent: true },
@@ -964,9 +929,7 @@ async function checkHealth() {
 
 resetSessionUI();
 applyRole("user");
-loadAuditLogsFromStorage();
-renderAuditDatabaseFilter();
-renderAuditLogList();
+loadAuditLogs();
 loadDatabaseList(false);
 checkHealth();
 setInterval(checkHealth, 15000);

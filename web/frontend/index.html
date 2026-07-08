@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>EncDB Console</title>
-  <link rel="stylesheet" href="style.css?v=202607071705" />
+  <link rel="stylesheet" href="style.css?v=202607081740" />
 </head>
 <body>
   <div class="app-shell">
@@ -67,6 +67,7 @@
           <input id="resume-edb-id" type="number" min="1" class="input-narrow" placeholder="例如 2" />
           <button id="btn-resume" class="btn primary" type="button">连接已有库</button>
           <button id="btn-init" class="btn admin-only" type="button">创建数据库</button>
+          <button id="btn-delete-database" class="btn danger admin-only" type="button">删除数据库</button>
           <button id="btn-shutdown" class="btn btn-ghost" type="button" disabled hidden>保存并断开</button>
         </div>
 
@@ -137,7 +138,7 @@
         <div class="panel-head">
           <div>
             <h2>审计日志</h2>
-            <p class="panel-lead">选择数据库后查看当前控制台记录的使用操作。</p>
+            <p class="panel-lead">选择数据库后查看服务器持久化的使用操作。</p>
           </div>
           <span class="panel-tag">Audit</span>
         </div>
@@ -147,6 +148,7 @@
           <select id="audit-edb-filter" class="select">
             <option value="all">全部数据库</option>
           </select>
+          <button id="btn-refresh-audit" class="btn btn-ghost btn-inline" type="button">刷新审计</button>
           <span id="audit-summary" class="audit-summary">暂无审计记录</span>
         </div>
 
@@ -210,6 +212,6 @@
     </main>
   </div>
 
-  <script src="app.js?v=202607071705"></script>
+  <script src="app.js?v=202607081740"></script>
 </body>
 </html>

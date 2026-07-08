@@ -414,6 +414,18 @@ input.sql {
   box-shadow: 0 12px 28px rgba(0, 168, 215, 0.2);
 }
 
+.btn.danger {
+  border-color: rgba(224, 70, 94, 0.34);
+  background: rgba(224, 70, 94, 0.1);
+  color: #ab2339;
+}
+
+.btn.danger:hover:not(:disabled) {
+  border-color: rgba(224, 70, 94, 0.5);
+  background: rgba(224, 70, 94, 0.14);
+  color: #8f182b;
+}
+
 .btn.btn-ghost {
   background: rgba(255, 255, 255, 0.48);
 }

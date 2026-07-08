@@ -24,3 +24,6 @@ HTTP_PORT = int(os.getenv("HTTP_PORT", "8080"))
 
 # 会话：client_id 从 1 递增
 SESSION_CLIENT_ID_START = int(os.getenv("SESSION_CLIENT_ID_START", "100"))
+
+# Audit log query limit
+AUDIT_LOG_LIMIT = int(os.getenv("AUDIT_LOG_LIMIT", "500"))

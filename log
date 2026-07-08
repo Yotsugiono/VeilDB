@@ -1,0 +1,7 @@
+更新日志（请在此行下方追加日志）
+
+[2026-07-07 16:52:48] 修改web/frontend/index.html、web/frontend/app.js、web/frontend/style.css、AGENTS.md，修改内容：新增管理者审计日志面板、前端操作记录与数据库筛选，并更新任务状态
+[2026-07-07 17:03:53] 修改web/frontend/index.html、AGENTS.md，修改内容：为前端静态资源增加版本查询串，避免浏览器继续使用旧版脚本导致审计记录不显示
+[2026-07-08 14:52:54] 修改AGENTS.md、README.md、.gitignore、环境配置.md、web/README.md，修改内容：完善项目结构说明，合并环境和 Web 文档到根 README，新增忽略规则并移除旧分散文档
+[2026-07-08 16:59:31] 修改web/gateway/audit.py、web/gateway/config.py、web/gateway/main.py、web/frontend/index.html、web/frontend/app.js、README.md、AGENTS.md，修改内容：实现后端持久化审计日志、审计查询接口和前端管理者审计展示
+[2026-07-08 20:45:44] 修改web/gateway/edb_persist.py、web/gateway/main.py、web/frontend/index.html、web/frontend/app.js、web/frontend/style.css、README.md、AGENTS.md，修改内容：新增管理者删除持久化数据库接口、前端删除入口、审计记录和文档说明

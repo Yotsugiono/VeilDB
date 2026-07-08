@@ -8,20 +8,28 @@ import uuid
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .bridge import call_encdb
+from .audit import append_audit, load_audit_logs
 from .config import (
+    AUDIT_LOG_LIMIT,
     DOC_ID_MAX,
     DOC_ID_MIN,
     ENCDB_DATA_DIR,
     ENCDB_UPLOAD_DIR,
     SESSION_CLIENT_ID_START,
 )
-from .edb_persist import get_database_statuses, list_persisted_edb_ids, load_catalog, save_catalog
+from .edb_persist import (
+    delete_persisted_edb,
+    get_database_statuses,
+    list_persisted_edb_ids,
+    load_catalog,
+    save_catalog,
+)
 from .encdb_rpc import (
     INIT_MODE_CREATE,
     INIT_MODE_RESUME,
@@ -151,6 +159,18 @@ def _alloc_client_id() -> int:
     return cid
 
 
+def _actor_role(request: Request) -> str:
+    role = request.headers.get("X-EncDB-Role", "unknown")
+    return role if role in {"admin", "user"} else "unknown"
+
+
+def _safe_audit(**kwargs) -> None:
+    try:
+        append_audit(**kwargs)
+    except Exception as exc:
+        print(f"[audit] failed to write audit log: {exc}")
+
+
 class DocCatalogModel(BaseModel):
     occupied: List[int] = Field(default_factory=list)
     doc_id_min: int = DOC_ID_MIN
@@ -250,6 +270,12 @@ class DatabaseListResponse(BaseModel):
     databases: List[DatabaseStatusModel] = Field(default_factory=list)
 
 
+class DeleteDatabaseResponse(BaseModel):
+    success: bool
+    edb_id: int
+    message: str = ""
+
+
 class UploadResponseModel(BaseModel):
     success: bool
     doc_id: int
@@ -272,11 +298,34 @@ class HealthResponse(BaseModel):
     upload_dir_exists: bool
 
 
+class AuditEntryModel(BaseModel):
+    id: str
+    time: str
+    edb_id: Optional[int] = None
+    session_id: Optional[str] = None
+    client_id: Optional[int] = None
+    role: str = "unknown"
+    action: str
+    target: str = ""
+    status: str
+    latency_ms: Optional[float] = None
+    detail: str = ""
+    source: str = "web-gateway"
+
+
+class AuditListResponse(BaseModel):
+    logs: List[AuditEntryModel]
+
+
 def _require_session(session_id: str) -> SessionState:
     state = _sessions.get(session_id)
     if not state or not state.initialized:
         raise HTTPException(status_code=400, detail="call /api/session/init first")
     return state
+
+
+def _session_bound_to_edb(edb_id: int) -> bool:
+    return any(state.initialized and state.edb_id == edb_id for state in _sessions.values())
 
 
 def _write_upload_sidecar(doc_id: int, raw: bytes, index_csv: str) -> None:
@@ -314,16 +363,91 @@ def list_databases() -> DatabaseListResponse:
     return DatabaseListResponse(edb_ids=[item.edb_id for item in statuses], databases=statuses)
 
 
+@app.delete("/api/databases/{edb_id}", response_model=DeleteDatabaseResponse)
+def delete_database(request: Request, edb_id: int) -> DeleteDatabaseResponse:
+    role = _actor_role(request)
+    if role != "admin":
+        _safe_audit(
+            edb_id=None,
+            session_id=None,
+            client_id=None,
+            role=role,
+            action="删除数据库",
+            target=f"数据库 #{edb_id}",
+            status="error",
+            detail="admin role required",
+        )
+        raise HTTPException(status_code=403, detail="admin role required")
+    if edb_id <= 0:
+        raise HTTPException(status_code=400, detail="invalid edb_id")
+    if edb_id not in list_persisted_edb_ids():
+        _safe_audit(
+            edb_id=None,
+            session_id=None,
+            client_id=None,
+            role=role,
+            action="删除数据库",
+            target=f"数据库 #{edb_id}",
+            status="error",
+            detail="database not found",
+        )
+        raise HTTPException(status_code=404, detail=f"edb_id={edb_id} not found on disk")
+    if _session_bound_to_edb(edb_id):
+        _safe_audit(
+            edb_id=None,
+            session_id=None,
+            client_id=None,
+            role=role,
+            action="删除数据库",
+            target=f"数据库 #{edb_id}",
+            status="error",
+            detail="database is bound to an active session",
+        )
+        raise HTTPException(status_code=409, detail="database is in use; save and disconnect first")
+
+    try:
+        delete_persisted_edb(edb_id)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail=f"edb_id={edb_id} not found on disk") from None
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    _edb_catalogs.pop(edb_id, None)
+    _safe_audit(
+        edb_id=None,
+        session_id=None,
+        client_id=None,
+        role=role,
+        action="删除数据库",
+        target=f"数据库 #{edb_id}",
+        status="success",
+        detail="persistent database directory deleted",
+    )
+    return DeleteDatabaseResponse(success=True, edb_id=edb_id, message="database deleted")
+
+
 @app.post("/api/session/init", response_model=InitResponseModel)
-def session_init(body: Optional[InitSessionRequest] = None) -> InitResponseModel:
+def session_init(request: Request, body: Optional[InitSessionRequest] = None) -> InitResponseModel:
+    role = _actor_role(request)
     enc_key = secrets.token_bytes(16)
     client_id = _alloc_client_id()
     session_id = str(uuid.uuid4())
     _sessions[session_id] = SessionState(client_id=client_id, enc_key=enc_key)
 
     resume_edb_id = body.edb_id if body and body.edb_id is not None else None
+    action = "连接数据库" if resume_edb_id is not None else "创建数据库"
     if resume_edb_id is not None:
         if resume_edb_id not in list_persisted_edb_ids():
+            _safe_audit(
+                edb_id=None,
+                session_id=session_id,
+                client_id=client_id,
+                role=role,
+                action=action,
+                target=f"数据库 #{resume_edb_id}",
+                status="error",
+                detail=f"edb_id={resume_edb_id} not found on disk",
+            )
             raise HTTPException(status_code=404, detail=f"edb_id={resume_edb_id} not found on disk")
         req = build_request_from_sql(
             "INIT",
@@ -336,8 +460,20 @@ def session_init(body: Optional[InitSessionRequest] = None) -> InitResponseModel
         req = build_request_from_sql("INIT", client_id, enc_key=enc_key)
 
     resp, latency_ms = call_encdb(req, client_id)
+    audit_latency = round(latency_ms, 2)
 
     if resp.status != ResponseStatus.OK or resp.init is None:
+        _safe_audit(
+            edb_id=resume_edb_id,
+            session_id=session_id,
+            client_id=client_id,
+            role=role,
+            action=action,
+            target=f"数据库 #{resume_edb_id}" if resume_edb_id is not None else "新数据库",
+            status="error",
+            latency_ms=audit_latency,
+            detail="INIT failed on encdb_server",
+        )
         raise HTTPException(status_code=502, detail="INIT failed on encdb_server")
 
     state = _sessions[session_id]
@@ -348,20 +484,34 @@ def session_init(body: Optional[InitSessionRequest] = None) -> InitResponseModel
     else:
         reset_edb_catalog(state.edb_id)
 
+    _safe_audit(
+        edb_id=state.edb_id,
+        session_id=session_id,
+        client_id=client_id,
+        role=role,
+        action=action,
+        target=f"数据库 #{state.edb_id}",
+        status="success",
+        latency_ms=audit_latency,
+        detail=f"session={session_id}",
+    )
+
     return InitResponseModel(
         session_id=session_id,
         client_id=client_id,
         edb_id=resp.init.edb_id,
         doc_catalog=state.catalog_snapshot(),
-        latency_ms=round(latency_ms, 2),
+        latency_ms=audit_latency,
     )
 
 
 @app.post("/api/session/shutdown", response_model=ShutdownResponseModel)
-def session_shutdown(body: ShutdownRequestModel) -> ShutdownResponseModel:
+def session_shutdown(request: Request, body: ShutdownRequestModel) -> ShutdownResponseModel:
+    role = _actor_role(request)
     state = _require_session(body.session_id)
     req = build_shutdown_request(state.client_id)
     resp, latency_ms = call_encdb(req, state.client_id)
+    audit_latency = round(latency_ms, 2)
 
     ok = resp.status == ResponseStatus.OK and resp.shutdown and resp.shutdown.success == 1
     if ok and state.edb_id is not None:
@@ -371,10 +521,22 @@ def session_shutdown(body: ShutdownRequestModel) -> ShutdownResponseModel:
     if ok:
         _sessions.pop(body.session_id, None)
 
+    _safe_audit(
+        edb_id=state.edb_id,
+        session_id=body.session_id,
+        client_id=state.client_id,
+        role=role,
+        action="保存并断开",
+        target=f"数据库 #{state.edb_id}" if state.edb_id is not None else "未绑定数据库",
+        status="success" if ok else "error",
+        latency_ms=audit_latency,
+        detail="" if ok else "shutdown flush failed",
+    )
+
     return ShutdownResponseModel(
         success=ok,
         edb_id=state.edb_id,
-        latency_ms=round(latency_ms, 2),
+        latency_ms=audit_latency,
         message="" if ok else "shutdown flush failed",
     )
 
@@ -394,11 +556,22 @@ def session_info(session_id: str) -> SessionInfo:
 
 
 @app.post("/api/insert", response_model=InsertResponseModel)
-def insert_doc(body: InsertRequest) -> InsertResponseModel:
+def insert_doc(request: Request, body: InsertRequest) -> InsertResponseModel:
+    role = _actor_role(request)
     state = _require_session(body.session_id)
 
     doc_path = ENCDB_DATA_DIR / body.doc_id
     if not doc_path.is_file():
+        _safe_audit(
+            edb_id=state.edb_id,
+            session_id=body.session_id,
+            client_id=state.client_id,
+            role=role,
+            action="插入 Enron 示例",
+            target=f"文档 #{body.doc_id}",
+            status="error",
+            detail=f"document not found: {doc_path}",
+        )
         raise HTTPException(status_code=404, detail=f"document not found: {doc_path}")
 
     payload = (doc_path.read_bytes() + b"\0")[:MAX_DOC_SIZE]
@@ -411,20 +584,33 @@ def insert_doc(body: InsertRequest) -> InsertResponseModel:
         is_insert=True,
     )
     resp, latency_ms = call_encdb(req, state.client_id)
+    audit_latency = round(latency_ms, 2)
 
     ok = resp.status == ResponseStatus.OK and resp.update and resp.update.success == 1
     if ok:
         state.mark_occupied(int(body.doc_id))
+    _safe_audit(
+        edb_id=state.edb_id,
+        session_id=body.session_id,
+        client_id=state.client_id,
+        role=role,
+        action="插入 Enron 示例",
+        target=f"文档 #{body.doc_id}",
+        status="success" if ok else "error",
+        latency_ms=audit_latency,
+        detail="" if ok else "update failed",
+    )
     return InsertResponseModel(
         success=ok,
         doc_id=int(body.doc_id),
-        latency_ms=round(latency_ms, 2),
+        latency_ms=audit_latency,
         message="" if ok else "update failed",
     )
 
 
 @app.post("/api/delete", response_model=DeleteResponseModel)
-def delete_doc(body: DeleteRequest) -> DeleteResponseModel:
+def delete_doc(request: Request, body: DeleteRequest) -> DeleteResponseModel:
+    role = _actor_role(request)
     state = _require_session(body.session_id)
     did = int(body.doc_id)
 
@@ -437,31 +623,55 @@ def delete_doc(body: DeleteRequest) -> DeleteResponseModel:
         doc_content=b"",
     )
     resp, latency_ms = call_encdb(req, state.client_id)
+    audit_latency = round(latency_ms, 2)
 
     ok = resp.status == ResponseStatus.OK and resp.update and resp.update.success == 1
     if ok:
         state.mark_free(did)
         _remove_upload_sidecar(did)
+    _safe_audit(
+        edb_id=state.edb_id,
+        session_id=body.session_id,
+        client_id=state.client_id,
+        role=role,
+        action="删除文档",
+        target=f"文档 #{did}",
+        status="success" if ok else "error",
+        latency_ms=audit_latency,
+        detail="" if ok else "delete failed",
+    )
     return DeleteResponseModel(
         success=ok,
         doc_id=did,
-        latency_ms=round(latency_ms, 2),
+        latency_ms=audit_latency,
         message="" if ok else "delete failed",
     )
 
 
 @app.post("/api/upload", response_model=UploadResponseModel)
 async def upload_doc(
+    request: Request,
     session_id: str = Form(...),
     file: UploadFile = File(...),
     doc_id: Optional[int] = Form(None),
 ) -> UploadResponseModel:
+    role = _actor_role(request)
     state = _require_session(session_id)
     raw = await file.read()
     raw, truncated_raw = truncate_raw_document(raw, MAX_DOC_SIZE)
 
     did = doc_id if doc_id is not None else state.alloc_doc_id()
     if did < DOC_ID_MIN or did > DOC_ID_MAX:
+        _safe_audit(
+            edb_id=state.edb_id,
+            session_id=session_id,
+            client_id=state.client_id,
+            role=role,
+            action="上传文档",
+            target=f"文档 #{did}",
+            status="error",
+            detail=f"doc_id must be in {DOC_ID_MIN}..{DOC_ID_MAX}",
+        )
         raise HTTPException(status_code=400, detail=f"doc_id must be in {DOC_ID_MIN}..{DOC_ID_MAX}")
 
     index_csv = build_index_payload(raw.decode("utf-8", errors="replace"))
@@ -478,11 +688,23 @@ async def upload_doc(
         doc_content=raw,
     )
     resp, latency_ms = call_encdb(req, state.client_id)
+    audit_latency = round(latency_ms, 2)
 
     ok = resp.status == ResponseStatus.OK and resp.update and resp.update.success == 1
     if ok:
         state.mark_occupied(did)
         _write_upload_sidecar(did, raw, index_csv)
+    _safe_audit(
+        edb_id=state.edb_id,
+        session_id=session_id,
+        client_id=state.client_id,
+        role=role,
+        action="上传文档",
+        target=f"文档 #{did}",
+        status="success" if ok else "error",
+        latency_ms=audit_latency,
+        detail=f"file={file.filename or '-'}, raw_bytes={len(raw)}" if ok else "upload failed",
+    )
 
     return UploadResponseModel(
         success=ok,
@@ -491,7 +713,7 @@ async def upload_doc(
         raw_bytes=len(raw),
         truncated_index=truncated_index,
         truncated_raw=truncated_raw,
-        latency_ms=round(latency_ms, 2),
+        latency_ms=audit_latency,
         message="" if ok else "upload failed",
         replaced=False,
     )
@@ -499,10 +721,12 @@ async def upload_doc(
 
 @app.post("/api/replace", response_model=UploadResponseModel)
 async def replace_doc(
+    request: Request,
     session_id: str = Form(...),
     file: UploadFile = File(...),
     doc_id: int = Form(...),
 ) -> UploadResponseModel:
+    role = _actor_role(request)
     state = _require_session(session_id)
     raw = await file.read()
     raw, truncated_raw = truncate_raw_document(raw, MAX_DOC_SIZE)
@@ -521,11 +745,23 @@ async def replace_doc(
         doc_content=raw,
     )
     resp, latency_ms = call_encdb(req, state.client_id)
+    audit_latency = round(latency_ms, 2)
 
     ok = resp.status == ResponseStatus.OK and resp.update and resp.update.success == 1
     if ok:
         state.mark_occupied(doc_id)
         _write_upload_sidecar(doc_id, raw, index_csv)
+    _safe_audit(
+        edb_id=state.edb_id,
+        session_id=session_id,
+        client_id=state.client_id,
+        role=role,
+        action="替换文档",
+        target=f"文档 #{doc_id}",
+        status="success" if ok else "error",
+        latency_ms=audit_latency,
+        detail=f"file={file.filename or '-'}, raw_bytes={len(raw)}" if ok else "replace failed",
+    )
 
     return UploadResponseModel(
         success=ok,
@@ -534,42 +770,98 @@ async def replace_doc(
         raw_bytes=len(raw),
         truncated_index=truncated_index,
         truncated_raw=truncated_raw,
-        latency_ms=round(latency_ms, 2),
+        latency_ms=audit_latency,
         message="" if ok else "replace failed",
         replaced=True,
     )
 
 
 @app.post("/api/query", response_model=QueryResponseModel)
-def run_query(body: QueryRequest) -> QueryResponseModel:
+def run_query(request: Request, body: QueryRequest) -> QueryResponseModel:
+    role = _actor_role(request)
     state = _require_session(body.session_id)
 
     sql = body.sql.strip()
     if not sql.upper().startswith("SELECT"):
+        _safe_audit(
+            edb_id=state.edb_id,
+            session_id=body.session_id,
+            client_id=state.client_id,
+            role=role,
+            action="执行查询",
+            target=sql[:200],
+            status="error",
+            detail="only SELECT is supported",
+        )
         raise HTTPException(status_code=400, detail="only SELECT is supported")
 
     req = build_request_from_sql(sql, state.client_id)
     if req.req_type != RequestType.SELECT or req.select is None:
+        _safe_audit(
+            edb_id=state.edb_id,
+            session_id=body.session_id,
+            client_id=state.client_id,
+            role=role,
+            action="执行查询",
+            target=sql[:200],
+            status="error",
+            detail="invalid SELECT",
+        )
         raise HTTPException(status_code=400, detail="invalid SELECT")
 
     select_type = req.select.select_type
     resp, latency_ms = call_encdb(req, state.client_id)
+    audit_latency = round(latency_ms, 2)
     if resp.status != ResponseStatus.OK or resp.select is None:
+        _safe_audit(
+            edb_id=state.edb_id,
+            session_id=body.session_id,
+            client_id=state.client_id,
+            role=role,
+            action="执行查询",
+            target=sql[:200],
+            status="error",
+            latency_ms=audit_latency,
+            detail="query failed on encdb_server",
+        )
         raise HTTPException(status_code=502, detail="query failed on encdb_server")
 
     formatted = format_select_response(resp.select, select_type, sql)
     hits = [QueryHit(**h) for h in formatted["hits"]]
+    detail = (
+        f"result_mode={formatted['result_mode']}, "
+        f"doc_count={formatted['doc_count']}, "
+        f"match_count={formatted.get('match_count')}"
+    )
+    _safe_audit(
+        edb_id=state.edb_id,
+        session_id=body.session_id,
+        client_id=state.client_id,
+        role=role,
+        action="执行查询",
+        target=sql[:200],
+        status="success",
+        latency_ms=audit_latency,
+        detail=detail,
+    )
 
     return QueryResponseModel(
         result_mode=formatted["result_mode"],
         doc_count=formatted["doc_count"],
         hits=hits,
-        latency_ms=round(latency_ms, 2),
+        latency_ms=audit_latency,
         sql=sql,
         aggregate_op=formatted.get("aggregate_op"),
         match_count=formatted.get("match_count"),
         aggregate_value=formatted.get("aggregate_value"),
     )
+
+
+@app.get("/api/audit/logs", response_model=AuditListResponse)
+def audit_logs(edb_id: Optional[int] = None, limit: int = AUDIT_LOG_LIMIT) -> AuditListResponse:
+    safe_limit = max(1, min(limit, 1000))
+    logs = [AuditEntryModel(**item) for item in load_audit_logs(edb_id, safe_limit)]
+    return AuditListResponse(logs=logs)
 
 
 _frontend = Path(__file__).resolve().parent.parent / "frontend"
