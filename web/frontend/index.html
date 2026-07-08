@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>EncDB Console</title>
+  <link rel="stylesheet" href="style.css?v=202607071705" />
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar" aria-label="角色导航">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true">E</div>
+        <div>
+          <strong>EncDB</strong>
+          <span>Console</span>
+        </div>
+      </div>
+
+      <nav class="role-nav" aria-label="选择界面">
+        <button id="role-user" class="role-item active" type="button" data-role="user">
+          <span class="role-icon" aria-hidden="true">U</span>
+          <span>使用者</span>
+        </button>
+        <button id="role-admin" class="role-item" type="button" data-role="admin">
+          <span class="role-icon" aria-hidden="true">M</span>
+          <span>管理者</span>
+        </button>
+      </nav>
+
+      <div class="sidebar-status">
+        <span id="health-dot" class="dot offline" title="服务状态"></span>
+        <span id="health-text">正在检测网关</span>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Secure Search Console</p>
+          <h1 id="role-title">使用者工作台</h1>
+          <p id="role-description" class="topbar-desc">连接已有加密数据库，完成文档插入和加密查询。</p>
+        </div>
+        <div class="topbar-meta">
+          <div class="meta-card">
+            <span>当前数据库</span>
+            <strong id="hero-edb-summary">未连接</strong>
+          </div>
+          <div class="meta-card">
+            <span>文档数量</span>
+            <strong id="hero-doc-summary">等待连接</strong>
+          </div>
+        </div>
+      </header>
+
+      <section class="panel panel-session">
+        <div class="panel-head">
+          <div>
+            <h2>数据库连接</h2>
+            <p class="panel-lead">使用者可打开已有数据库；管理者可额外创建新数据库。</p>
+          </div>
+          <span class="panel-tag" id="current-role-tag">使用者</span>
+        </div>
+
+        <div class="control-row">
+          <label class="field-label" for="resume-edb-id">数据库编号</label>
+          <input id="resume-edb-id" type="number" min="1" class="input-narrow" placeholder="例如 2" />
+          <button id="btn-resume" class="btn primary" type="button">连接已有库</button>
+          <button id="btn-init" class="btn admin-only" type="button">创建数据库</button>
+          <button id="btn-shutdown" class="btn btn-ghost" type="button" disabled hidden>保存并断开</button>
+        </div>
+
+        <p id="available-databases-summary" class="available-databases-summary user-only">可连接数据库：正在加载。</p>
+
+        <div class="status-card">
+          <span class="status-card-title">连接状态</span>
+          <p id="session-meta" class="status" role="status">等待连接数据库。</p>
+        </div>
+      </section>
+
+      <section class="panel admin-only" id="admin-database-panel">
+        <div class="panel-head">
+          <div>
+            <h2>数据库状态</h2>
+            <p class="panel-lead">查看已持久化数据库、文档数量。</p>
+          </div>
+          <button id="btn-list-databases" class="btn btn-ghost btn-inline" type="button">查看数据库状态</button>
+        </div>
+
+        <div id="database-browser" class="database-browser">
+          <div class="database-browser-head">
+            <span class="status-card-title">已有数据库</span>
+            <button id="btn-refresh-databases" class="btn btn-ghost btn-inline" type="button">刷新</button>
+          </div>
+          <div id="database-list" class="database-list">
+            <p class="database-empty">点击“查看数据库状态”后加载列表。</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel panel-docs">
+        <div class="panel-head">
+          <div>
+            <h2>文档插入</h2>
+            <p class="panel-lead">选择文档 ID 后上传本地文件，或插入 Enron 示例文档。</p>
+          </div>
+          <span class="panel-tag">Documents</span>
+        </div>
+
+        <div class="control-row">
+          <label class="field-label" for="doc-id">文档 ID</label>
+          <input id="doc-id" type="number" class="input-doc-id-inline" min="1" max="10000" value="1" disabled />
+          <div class="insert-wrap">
+            <button id="btn-insert" class="btn primary" type="button" disabled>插入文档</button>
+            <div id="insert-menu" class="insert-menu hidden" role="menu">
+              <button id="btn-insert-upload" class="insert-menu-item" type="button">上传本地文件</button>
+              <button id="btn-insert-enron" class="insert-menu-item" type="button">插入 Enron 示例</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="control-row batch-row admin-only">
+          <label class="field-label" for="batch-start-id">样例范围</label>
+          <input id="batch-start-id" type="number" class="input-doc-id-inline" min="1" max="10000" value="1" disabled />
+          <span class="range-separator">至</span>
+          <input id="batch-end-id" type="number" class="input-doc-id-inline" min="1" max="10000" value="5" disabled />
+          <button id="btn-batch-insert" class="btn primary" type="button" disabled>批量插入</button>
+        </div>
+
+        <div class="status-card">
+          <span class="status-card-title">文档操作反馈</span>
+          <p id="doc-status" class="status" role="status">连接数据库后即可执行文档插入。</p>
+        </div>
+      </section>
+
+      <section class="panel admin-only" id="admin-audit-panel">
+        <div class="panel-head">
+          <div>
+            <h2>审计日志</h2>
+            <p class="panel-lead">选择数据库后查看当前控制台记录的使用操作。</p>
+          </div>
+          <span class="panel-tag">Audit</span>
+        </div>
+
+        <div class="audit-toolbar">
+          <label class="field-label" for="audit-edb-filter">数据库</label>
+          <select id="audit-edb-filter" class="select">
+            <option value="all">全部数据库</option>
+          </select>
+          <span id="audit-summary" class="audit-summary">暂无审计记录</span>
+        </div>
+
+        <div id="audit-log-list" class="audit-log-list" aria-live="polite">
+          <p class="database-empty">暂无使用记录。创建、连接、插入或查询数据库后会显示在这里。</p>
+        </div>
+      </section>
+
+      <section class="panel panel-query user-only">
+        <div class="panel-head">
+          <div>
+            <h2>查询工作台</h2>
+            <p class="panel-lead">输入 SELECT 语句检索文档，支持 AND / OR / NOT 以及聚合函数。</p>
+          </div>
+          <span class="panel-tag">Query</span>
+        </div>
+
+        <div class="control-row query-row">
+          <input
+            id="sql-input"
+            type="text"
+            class="sql"
+            value="SELECT firm OR name"
+            spellcheck="false"
+            placeholder="SELECT keyword OR keyword"
+          />
+          <button id="btn-query" class="btn primary" type="button" disabled>执行查询</button>
+        </div>
+
+        <div class="query-toolbar" id="query-kpis" aria-live="polite">
+          <div class="query-chip">
+            <span>状态</span>
+            <strong>等待查询</strong>
+          </div>
+        </div>
+
+        <div class="status-card">
+          <span class="status-card-title">查询摘要</span>
+          <p id="query-meta" class="status">输入查询语句后执行，结果会在下方展示。</p>
+        </div>
+      </section>
+
+      <section class="panel panel-results user-only">
+        <div class="panel-head">
+          <div>
+            <h2>结果面板</h2>
+            <p class="panel-lead">命中的文档按卡片展示，聚合结果会单独高亮。</p>
+          </div>
+          <span class="panel-tag">Results</span>
+        </div>
+
+        <div id="results" class="results">
+          <div class="empty-state">
+            <div>
+              <strong>还没有查询结果</strong>
+              <p>连接数据库后执行 SELECT 查询，结果会在这里呈现。</p>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="app.js?v=202607071705"></script>
+</body>
+</html>

@@ -1,0 +1,62 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Python virtual environments
+.venv/
+venv/
+env/
+
+# Web gateway runtime files
+web/gateway/uploads/
+
+# EncDB runtime databases and generated data
+EncDB/Databases/
+!EncDB/Databases/.gitkeep
+
+# C/C++ and SGX build outputs
+*.o
+*.a
+*.so
+*.signed.so
+*.dll
+*.dylib
+*.exe
+EncDB/System_high/encdb_server
+EncDB/System_high/encdb_client
+EncDB/System_high/encdb_benchmark
+EncDB/System_high/CryptoTestingApp/*_u.c
+EncDB/System_high/CryptoTestingApp/*_u.h
+EncDB/System_high/CryptoEnclave/*_t.c
+EncDB/System_high/CryptoEnclave/*_t.h
+EncDB/System_high/CryptoEnclave/*.pem
+
+# Build directories
+build/
+dist/
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+compile_commands.json
+
+# Logs and local config
+*.log
+*.tmp
+*.bak
+.env
+.env.*
+
+# OS and editor files
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/
+*.swp
+*.swo

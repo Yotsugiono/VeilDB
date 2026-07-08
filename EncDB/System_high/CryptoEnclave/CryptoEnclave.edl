@@ -1,0 +1,35 @@
+enclave {
+
+    from "sgx_tstdc.edl" import *;
+    
+    
+    trusted {
+
+        public int ecall_schedule_context(uint32_t client_id, uint32_t edb_id, uint8_t create_if_missing);
+        public void ecall_update_init(uint32_t edb_id);
+        public void ecall_apply_init_key([in, size=16] const uint8_t* key);
+        public void ecall_persist_context(uint32_t edb_id);
+        public void ecall_handle_request(
+            uint64_t edb_id,
+            [in, size=req_len] uint8_t* req,
+            size_t req_len,
+            [out, size=out_len] void* out,
+            size_t out_len
+        );
+        public void ecall_printMem();
+    };
+
+    untrusted {
+
+        void ocall_print_string([in, string] const char *str);
+
+        void ocall_load_bitmap(uint32_t edb_id, [in, size=ins_length] void* ins, [out, size=ins_res_length] void* ins_res, size_t ins_length, size_t ins_res_length);
+        void ocall_store_bitmaps(uint32_t edb_id, [in, count=amt, size=outs_length] void* outs, [in, count=amt, size=outs_res_length] void* outs_res, size_t amt, size_t outs_length, size_t outs_res_length);
+
+        void ocall_load_docs(uint32_t edb_id, [in, count=amt, size=ins_length] void* ins, [out, count=amt, size=ins_res_length] void* ins_res, size_t amt, size_t ins_length, size_t ins_res_length);
+        void ocall_store_docs(uint32_t edb_id, [in, count=amt, size=outs_length] void* outs, [in, count=amt, size=outs_res_length] void* outs_res, size_t amt, size_t outs_length, size_t outs_res_length);
+
+        void ocall_load_context_snapshot(uint32_t edb_id, [out, size=max_len] uint8_t* buf, size_t max_len, [out] uint32_t* actual_len);
+        void ocall_store_context_snapshot(uint32_t edb_id, [in, size=len] uint8_t* buf, size_t len);
+    };
+};
