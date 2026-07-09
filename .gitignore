@@ -47,6 +47,7 @@ compile_commands.json
 
 # Logs and local config
 *.log
+log
 *.tmp
 *.bak
 .env
@@ -60,5 +61,3 @@ desktop.ini
 .vscode/
 *.swp
 *.swo
-
-AGENTS.md

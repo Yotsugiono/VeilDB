@@ -325,6 +325,11 @@ input {
   font-weight: 600;
 }
 
+.inline-note {
+  color: var(--muted-text);
+  font-size: 0.84rem;
+}
+
 input[type="text"],
 input[type="number"] {
   min-height: 42px;
@@ -532,6 +537,74 @@ input.sql {
 
 .database-empty {
   margin: 0;
+}
+
+.permission-matrix {
+  overflow: auto;
+}
+
+.permission-table-wrap {
+  overflow: auto;
+  border: 1px solid rgba(107, 121, 143, 0.18);
+  border-radius: var(--radius-md);
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.permission-table {
+  width: 100%;
+  min-width: 520px;
+  border-collapse: collapse;
+}
+
+.permission-table th,
+.permission-table td {
+  padding: 11px 12px;
+  border-bottom: 1px solid rgba(107, 121, 143, 0.14);
+  text-align: left;
+  vertical-align: middle;
+}
+
+.permission-table th {
+  color: var(--secondary-text);
+  font-size: 0.84rem;
+  font-weight: 800;
+  background: rgba(248, 250, 252, 0.72);
+}
+
+.permission-table tbody tr:last-child th,
+.permission-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.permission-select {
+  width: 100%;
+  min-height: 36px;
+  min-width: 92px;
+  padding: 0.42rem 0.55rem;
+  border: 1px solid rgba(107, 121, 143, 0.24);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.9);
+  color: var(--foreground);
+  font-size: 0.84rem;
+  font-weight: 700;
+}
+
+.permission-select.permission-none {
+  border-color: rgba(107, 121, 143, 0.22);
+  background: rgba(107, 121, 143, 0.08);
+  color: var(--muted-text);
+}
+
+.permission-select.permission-read {
+  border-color: rgba(0, 168, 215, 0.28);
+  background: rgba(0, 168, 215, 0.08);
+  color: var(--primary-strong);
+}
+
+.permission-select.permission-write {
+  border-color: rgba(32, 166, 107, 0.28);
+  background: rgba(32, 166, 107, 0.1);
+  color: #10764a;
 }
 
 .insert-wrap {

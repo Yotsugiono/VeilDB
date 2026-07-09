@@ -10,6 +10,20 @@ let occupiedDocIds = new Set();
 let cachedDatabaseItems = [];
 let auditLogs = [];
 let auditDatabaseFilter = "all";
+const GROUPS = [
+  { id: "1", name: "组1" },
+  { id: "2", name: "组2" },
+  { id: "3", name: "组3" },
+];
+const PERMISSIONS = [
+  { id: "none", label: "无权限", rank: 0 },
+  { id: "read", label: "只读", rank: 1 },
+  { id: "write", label: "读写", rank: 2 },
+];
+const PERMISSION_STORAGE_KEY = "encdb.permissionMatrix.v1";
+const USER_GROUP_STORAGE_KEY = "encdb.currentUserGroup.v1";
+let currentUserGroup = localStorage.getItem(USER_GROUP_STORAGE_KEY) || "";
+let permissionMatrix = loadPermissionMatrix();
 
 const $ = (id) => document.getElementById(id);
 
@@ -130,6 +144,187 @@ function formatAuditTime(value) {
   return date.toLocaleString("zh-CN", { hour12: false });
 }
 
+function loadPermissionMatrix() {
+  try {
+    const raw = localStorage.getItem(PERMISSION_STORAGE_KEY);
+    const parsed = raw ? JSON.parse(raw) : {};
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function savePermissionMatrix() {
+  localStorage.setItem(PERMISSION_STORAGE_KEY, JSON.stringify(permissionMatrix));
+}
+
+function permissionInfo(permission) {
+  return PERMISSIONS.find((item) => item.id === permission) || PERMISSIONS[0];
+}
+
+function normalizePermission(permission) {
+  return permissionInfo(permission).id;
+}
+
+function permissionRank(permission) {
+  return permissionInfo(permission).rank;
+}
+
+function permissionLabel(permission) {
+  return permissionInfo(permission).label;
+}
+
+function ensurePermissionRows(items = cachedDatabaseItems) {
+  let changed = false;
+  items.forEach((item) => {
+    if (!Number.isInteger(item.edb_id)) return;
+    const dbKey = String(item.edb_id);
+    if (!permissionMatrix[dbKey]) {
+      permissionMatrix[dbKey] = {};
+      changed = true;
+    }
+    GROUPS.forEach((group) => {
+      if (!permissionMatrix[dbKey][group.id]) {
+        permissionMatrix[dbKey][group.id] = "none";
+        changed = true;
+      }
+    });
+  });
+  if (changed) {
+    savePermissionMatrix();
+  }
+}
+
+function getGroupPermission(targetEdbId, groupId = currentUserGroup) {
+  if (!targetEdbId || !groupId) return "none";
+  return normalizePermission(permissionMatrix[String(targetEdbId)]?.[groupId]);
+}
+
+function canUserReadDatabase(targetEdbId) {
+  return permissionRank(getGroupPermission(targetEdbId)) >= permissionRank("read");
+}
+
+function canUserWriteDatabase(targetEdbId) {
+  return permissionRank(getGroupPermission(targetEdbId)) >= permissionRank("write");
+}
+
+function canWriteCurrentDatabase() {
+  if (currentRole === "admin") return true;
+  return sessionId && canUserWriteDatabase(edbId);
+}
+
+function renderUserGroupOptions() {
+  const select = $("user-group-select");
+  const meta = $("user-group-meta");
+  if (!select || !meta) return;
+
+  select.innerHTML = [
+    '<option value="">请选择组</option>',
+    ...GROUPS.map((group) => `<option value="${group.id}">${group.name}</option>`),
+  ].join("");
+  select.value = currentUserGroup;
+
+  const group = GROUPS.find((item) => item.id === currentUserGroup);
+  meta.textContent = group
+    ? `当前组：${group.name}。`
+    : "选择一个组后才能连接数据库。";
+}
+
+function renderPermissionMatrix() {
+  const host = $("permission-matrix");
+  if (!host) return;
+
+  const dbItems = cachedDatabaseItems.filter((item) => Number.isInteger(item.edb_id));
+  ensurePermissionRows(dbItems);
+  if (!dbItems.length) {
+    host.innerHTML = '<p class="database-empty">当前没有已保存数据库，创建并保存数据库后可配置权限。</p>';
+    return;
+  }
+
+  const headers = dbItems
+    .map((item) => `<th scope="col">数据库 #${item.edb_id}</th>`)
+    .join("");
+  const rows = GROUPS.map((group) => {
+    const cells = dbItems.map((item) => {
+      const dbKey = String(item.edb_id);
+      const permission = getGroupPermission(item.edb_id, group.id);
+      const options = PERMISSIONS.map((option) => {
+        const selected = option.id === permission ? " selected" : "";
+        return `<option value="${option.id}"${selected}>${option.label}</option>`;
+      }).join("");
+      return `
+        <td>
+          <select class="permission-select permission-${permission}" data-edb-id="${dbKey}" data-group-id="${group.id}">
+            ${options}
+          </select>
+        </td>
+      `;
+    }).join("");
+    return `
+      <tr>
+        <th scope="row">${group.name}</th>
+        ${cells}
+      </tr>
+    `;
+  }).join("");
+
+  host.innerHTML = `
+    <div class="permission-table-wrap">
+      <table class="permission-table">
+        <thead>
+          <tr>
+            <th scope="col">用户组</th>
+            ${headers}
+          </tr>
+        </thead>
+        <tbody>
+          ${rows}
+        </tbody>
+      </table>
+    </div>
+  `;
+
+  host.querySelectorAll(".permission-select").forEach((select) => {
+    select.addEventListener("change", () => {
+      const dbKey = select.dataset.edbId;
+      const groupId = select.dataset.groupId;
+      permissionMatrix[dbKey][groupId] = normalizePermission(select.value);
+      savePermissionMatrix();
+      renderPermissionMatrix();
+      updateAvailableDatabasesSummary();
+      applyPermissionGate();
+    });
+  });
+}
+
+function applyPermissionGate() {
+  renderUserGroupOptions();
+
+  const needsGroup = currentRole === "user";
+  const hasGroup = Boolean(currentUserGroup);
+  const canRead = currentRole === "admin" || (sessionId && canUserReadDatabase(edbId));
+  const canWrite = currentRole === "admin" || (sessionId && canUserWriteDatabase(edbId));
+
+  if (!sessionId) {
+    $("btn-resume").disabled = needsGroup && !hasGroup;
+    $("doc-id").disabled = true;
+    $("btn-insert").disabled = true;
+    $("batch-start-id").disabled = true;
+    $("batch-end-id").disabled = true;
+    $("btn-batch-insert").disabled = true;
+    $("btn-query").disabled = true;
+    return;
+  }
+
+  $("btn-resume").disabled = true;
+  $("doc-id").disabled = !canWrite;
+  $("btn-insert").disabled = !canWrite;
+  $("btn-query").disabled = !canRead;
+  $("batch-start-id").disabled = currentRole !== "admin";
+  $("batch-end-id").disabled = currentRole !== "admin";
+  $("btn-batch-insert").disabled = currentRole !== "admin";
+}
+
 function getAuditDatabaseIds() {
   const ids = new Set();
   cachedDatabaseItems.forEach((item) => {
@@ -231,8 +426,23 @@ function updateAvailableDatabasesSummary(items = cachedDatabaseItems) {
   const summary = $("available-databases-summary");
   if (!summary) return;
 
+  if (currentRole === "user" && !currentUserGroup) {
+    summary.textContent = "可连接数据库：请先选择所属组。";
+    return;
+  }
+
   if (!items.length) {
     summary.textContent = "可连接数据库：暂无已保存数据库。";
+    return;
+  }
+
+  if (currentRole === "user") {
+    const allowed = items
+      .filter((item) => canUserReadDatabase(item.edb_id))
+      .map((item) => `#${item.edb_id}（${permissionLabel(getGroupPermission(item.edb_id))}）`);
+    summary.textContent = allowed.length
+      ? `可连接数据库：${allowed.join("、")}。`
+      : "可连接数据库：当前组暂无可访问数据库。";
     return;
   }
 
@@ -257,6 +467,7 @@ function applyRole(role) {
   } else {
     updateAvailableDatabasesSummary();
   }
+  applyPermissionGate();
 }
 
 function setSessionUI(info) {
@@ -273,7 +484,13 @@ function setSessionUI(info) {
   $("btn-batch-insert").disabled = false;
   $("btn-query").disabled = false;
   setSessionMeta(formatSessionConnected(info));
+  if (currentRole === "user" && !canUserWriteDatabase(info.edb_id)) {
+    setDocStatus(`当前组对数据库 #${info.edb_id} 只有${permissionLabel(getGroupPermission(info.edb_id))}权限，不能执行写入操作。`);
+  } else {
+    setDocStatus("已连接数据库，可以执行文档插入。");
+  }
   updateHeroSummary();
+  applyPermissionGate();
 }
 
 function resetSessionUI() {
@@ -301,6 +518,7 @@ function resetSessionUI() {
     "连接数据库后执行 SELECT 查询，结果会在这里呈现。"
   );
   updateHeroSummary();
+  applyPermissionGate();
 }
 
 function closeInsertMenu() {
@@ -445,7 +663,9 @@ async function loadDatabaseList(updateStatus = true) {
     const data = await api("/api/databases");
     const items = normalizeDatabaseItems(data);
     cachedDatabaseItems = items;
+    ensurePermissionRows(items);
     renderDatabaseList(items);
+    renderPermissionMatrix();
     updateAvailableDatabasesSummary(items);
     await loadAuditLogs();
     if (updateStatus) {
@@ -497,6 +717,26 @@ async function deleteDatabaseById(targetEdbId) {
 $("role-user").addEventListener("click", () => applyRole("user"));
 $("role-admin").addEventListener("click", () => applyRole("admin"));
 
+$("user-group-select").addEventListener("change", () => {
+  const nextGroup = $("user-group-select").value;
+  if (sessionId) {
+    $("user-group-select").value = currentUserGroup;
+    setSessionMeta("切换所属组前，请先保存并断开当前数据库。");
+    return;
+  }
+
+  currentUserGroup = nextGroup;
+  if (currentUserGroup) {
+    localStorage.setItem(USER_GROUP_STORAGE_KEY, currentUserGroup);
+  } else {
+    localStorage.removeItem(USER_GROUP_STORAGE_KEY);
+  }
+  renderUserGroupOptions();
+  updateAvailableDatabasesSummary();
+  applyPermissionGate();
+  setSessionMeta(currentUserGroup ? "已选择所属组，可以连接有权限的数据库。" : "请先选择所属组。");
+});
+
 $("btn-init").addEventListener("click", async () => {
   if (currentRole !== "admin") return;
 
@@ -539,6 +779,16 @@ $("btn-resume").addEventListener("click", async () => {
     setSessionMeta("数据库编号无效。");
     return;
   }
+  if (currentRole === "user") {
+    if (!currentUserGroup) {
+      setSessionMeta("请先选择所属组。");
+      return;
+    }
+    if (!canUserReadDatabase(resumeId)) {
+      setSessionMeta(`当前组无权访问数据库 #${resumeId}。`);
+      return;
+    }
+  }
 
   const resumeButton = $("btn-resume");
   $("btn-init").disabled = true;
@@ -565,6 +815,7 @@ $("btn-resume").addEventListener("click", async () => {
     resumeButton.disabled = false;
   } finally {
     setButtonBusy(resumeButton, false);
+    applyPermissionGate();
   }
 });
 
@@ -677,6 +928,12 @@ $("btn-shutdown").addEventListener("click", async () => {
 
 $("btn-insert").addEventListener("click", () => {
   if (!sessionId) return;
+  if (!canWriteCurrentDatabase()) {
+    setDocStatus(`当前组对数据库 #${edbId} 没有写权限。`);
+    closeInsertMenu();
+    applyPermissionGate();
+    return;
+  }
   try {
     parseDocId();
     toggleInsertMenu();
@@ -689,6 +946,11 @@ $("btn-insert").addEventListener("click", () => {
 $("btn-insert-enron").addEventListener("click", async () => {
   if (!sessionId) return;
   closeInsertMenu();
+  if (!canWriteCurrentDatabase()) {
+    setDocStatus(`当前组对数据库 #${edbId} 没有写权限。`);
+    applyPermissionGate();
+    return;
+  }
 
   let docId;
   try {
@@ -724,7 +986,7 @@ $("btn-insert-enron").addEventListener("click", async () => {
     await loadAuditLogs();
   } finally {
     setButtonBusy(insertButton, false);
-    insertButton.disabled = false;
+    applyPermissionGate();
   }
 });
 
@@ -794,6 +1056,12 @@ $("btn-batch-insert").addEventListener("click", async () => {
 });
 
 async function uploadSelectedFile(file) {
+  if (!canWriteCurrentDatabase()) {
+    setDocStatus(`当前组对数据库 #${edbId} 没有写权限。`);
+    applyPermissionGate();
+    return;
+  }
+
   let docId;
   try {
     docId = parseDocId();
@@ -834,7 +1102,7 @@ async function uploadSelectedFile(file) {
     await loadAuditLogs();
   } finally {
     setButtonBusy(insertButton, false);
-    insertButton.disabled = false;
+    applyPermissionGate();
   }
 }
 
@@ -873,6 +1141,11 @@ document.addEventListener("click", (event) => {
 $("btn-query").addEventListener("click", async () => {
   if (!sessionId) return;
   closeInsertMenu();
+  if (currentRole === "user" && !canUserReadDatabase(edbId)) {
+    setQueryMeta(`当前组无权查询数据库 #${edbId}。`);
+    applyPermissionGate();
+    return;
+  }
 
   const sql = $("sql-input").value.trim();
   if (!sql) {
@@ -907,7 +1180,7 @@ $("btn-query").addEventListener("click", async () => {
     renderEmptyState("查询失败", "请检查数据库状态、查询语句格式或网关连接。");
   } finally {
     setButtonBusy(queryButton, false);
-    queryButton.disabled = false;
+    applyPermissionGate();
   }
 });
 
