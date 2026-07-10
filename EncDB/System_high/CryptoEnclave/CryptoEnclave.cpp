@@ -195,11 +195,16 @@ void ecall_update_init(uint32_t edb_id){
     provision_all_doc_slot_tombstones(edb_id);
 }
 
-void ecall_apply_init_key(const uint8_t* key) {
-    if (key == nullptr) {
-        return;
+int ecall_generate_init_key() {
+    sgx_status_t status = sgx_read_rand(
+        context_manager.ctx.K,
+        ENTRY_HASH_KEY_LEN_128
+    );
+    if (status != SGX_SUCCESS) {
+        memset(context_manager.ctx.K, 0, ENTRY_HASH_KEY_LEN_128);
+        return -1;
     }
-    memcpy(context_manager.ctx.K, key, ENTRY_HASH_KEY_LEN_128);
+    return 0;
 }
 
 void ecall_persist_context(uint32_t edb_id) {
@@ -1528,4 +1533,3 @@ void ecall_handle_request(
         break;
     }
 }
-

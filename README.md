@@ -225,6 +225,7 @@ http://127.0.0.1:8080/static/index.html
 | `GET` | `/` | 服务信息，返回 UI 和 API docs 路径 |
 | `GET` | `/api/health` | 网关配置和目录健康信息 |
 | `GET` | `/api/databases` | 已持久化数据库列表 |
+| `GET` | `/api/databases/{edb_id}/key/status` | 查询数据库密钥状态，不返回密钥内容 |
 | `DELETE` | `/api/databases/{edb_id}` | 管理者删除未连接的持久化数据库 |
 | `POST` | `/api/session/init` | 创建新会话；传入 `edb_id` 时连接已有数据库 |
 | `POST` | `/api/session/shutdown` | 保存并关闭当前会话 |
@@ -241,6 +242,18 @@ FastAPI 自动文档地址：
 ```text
 http://127.0.0.1:8080/docs
 ```
+
+## 密钥管理
+
+当前版本采用“每个数据库一个独立密钥”的设计。创建新数据库时，`encdb_server` 只负责调度 Enclave；真实数据密钥由 Enclave 内部通过 SGX 随机数生成接口产生，FastAPI 网关、浏览器前端和普通服务端进程都不生成、不上传、不导出密钥明文。
+
+密钥保存在 Enclave 的运行时上下文中，并随 `ClientContext` 一起写入 SGX sealed context：
+
+```text
+EncDB/Databases/edb_<id>/context.dat
+```
+
+重新连接已有数据库时，Enclave 会从 `context.dat` 解封上下文并恢复该数据库自己的密钥。网关提供密钥状态查询接口，只返回作用域、托管来源、封存状态和状态说明，不返回密钥值或密钥指纹。历史版本创建的数据库仍会使用其 sealed context 中已有的密钥；新创建的数据库会使用 Enclave 内部生成的独立密钥。当前版本不提供密钥上传、导出或轮换功能。
 
 ## 数据库删除
 

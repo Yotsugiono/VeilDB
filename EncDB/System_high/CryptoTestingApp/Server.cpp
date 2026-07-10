@@ -301,9 +301,10 @@ bool Server::handle_request_core(const EncDBRequest& req, void* out, size_t out_
         }
 
         if (!resume && is_new_client) {
-            sgx_status_t key_status = ecall_apply_init_key(eid, init.key);
-            if (key_status != SGX_SUCCESS) {
-                printf("ecall_apply_init_key failed: %#x\n", key_status);
+            int key_ret = 0;
+            sgx_status_t key_status = ecall_generate_init_key(eid, &key_ret);
+            if (key_status != SGX_SUCCESS || key_ret != 0) {
+                printf("ecall_generate_init_key failed: status=%#x ret=%d\n", key_status, key_ret);
                 Server::enclave_pool.release(enclave, req.client_id);
                 return false;
             }

@@ -7,7 +7,7 @@ enclave {
 
         public int ecall_schedule_context(uint32_t client_id, uint32_t edb_id, uint8_t create_if_missing);
         public void ecall_update_init(uint32_t edb_id);
-        public void ecall_apply_init_key([in, size=16] const uint8_t* key);
+        public int ecall_generate_init_key();
         public void ecall_persist_context(uint32_t edb_id);
         public void ecall_handle_request(
             uint64_t edb_id,

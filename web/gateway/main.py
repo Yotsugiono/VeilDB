@@ -3,7 +3,6 @@ EncDB HTTP 网关 — INIT / INSERT / UPLOAD / REPLACE / DELETE / SELECT
 """
 from __future__ import annotations
 
-import secrets
 import uuid
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -24,6 +23,7 @@ from .config import (
     SESSION_CLIENT_ID_START,
 )
 from .edb_persist import (
+    database_dir,
     delete_persisted_edb,
     get_database_statuses,
     list_persisted_edb_ids,
@@ -276,6 +276,15 @@ class DeleteDatabaseResponse(BaseModel):
     message: str = ""
 
 
+class KeyStatusModel(BaseModel):
+    edb_id: int
+    key_scope: str = "database"
+    key_source: str = "enclave-managed"
+    sealed: bool
+    status: str
+    detail: str = ""
+
+
 class UploadResponseModel(BaseModel):
     success: bool
     doc_id: int
@@ -363,6 +372,24 @@ def list_databases() -> DatabaseListResponse:
     return DatabaseListResponse(edb_ids=[item.edb_id for item in statuses], databases=statuses)
 
 
+@app.get("/api/databases/{edb_id}/key/status", response_model=KeyStatusModel)
+def database_key_status(edb_id: int) -> KeyStatusModel:
+    if edb_id <= 0:
+        raise HTTPException(status_code=400, detail="invalid edb_id")
+
+    db_dir = database_dir(edb_id)
+    if not db_dir.is_dir():
+        raise HTTPException(status_code=404, detail=f"edb_id={edb_id} not found on disk")
+
+    sealed = (db_dir / "context.dat").is_file()
+    return KeyStatusModel(
+        edb_id=edb_id,
+        sealed=sealed,
+        status="sealed" if sealed else "session-only",
+        detail="sealed context present" if sealed else "context not sealed yet",
+    )
+
+
 @app.delete("/api/databases/{edb_id}", response_model=DeleteDatabaseResponse)
 def delete_database(request: Request, edb_id: int) -> DeleteDatabaseResponse:
     role = _actor_role(request)
@@ -429,7 +456,7 @@ def delete_database(request: Request, edb_id: int) -> DeleteDatabaseResponse:
 @app.post("/api/session/init", response_model=InitResponseModel)
 def session_init(request: Request, body: Optional[InitSessionRequest] = None) -> InitResponseModel:
     role = _actor_role(request)
-    enc_key = secrets.token_bytes(16)
+    enc_key = bytes(16)
     client_id = _alloc_client_id()
     session_id = str(uuid.uuid4())
     _sessions[session_id] = SessionState(client_id=client_id, enc_key=enc_key)
